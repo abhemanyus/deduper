@@ -9,6 +9,8 @@ use clap::Parser;
 use mime_guess::mime;
 use walkdir::WalkDir;
 
+use rayon::prelude::*;
+
 fn main() {
     let cli = Cli::parse();
     println!(
@@ -20,7 +22,7 @@ fn main() {
             .join("\n\t")
     );
     println!("destination: {}", cli.destination.to_string_lossy());
-    for source in cli.sources {
+    cli.sources.par_iter().for_each(|source| {
         for entry in WalkDir::new(source)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -97,7 +99,7 @@ fn main() {
                 continue;
             };
         }
-    }
+    })
 }
 
 #[derive(Parser)]

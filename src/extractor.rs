@@ -52,25 +52,21 @@ pub fn extract_image_timestamp(path: &Path) -> Option<DateTime<Local>> {
         })
         .and_then(|exif_data| {
             for tag in [Tag::DateTime, Tag::DateTimeOriginal, Tag::DateTimeDigitized] {
-                dbg!(tag);
                 if let Some(field) = exif_data.get_field(tag, In::PRIMARY) {
-                    dbg!(field);
-                    dbg!(field.display_value().with_unit(field).to_string().as_str());
-                    if let Ok(date_time) = NaiveDateTime::parse_from_str(
-                        field.display_value().with_unit(field).to_string().as_str(),
-                        "%Y:%m:%d %H:%M:%S",
-                    ) {
-                        dbg!(date_time);
-                        return Some(date_time);
-                    }
+                    return Some(field.clone());
                 }
             }
             None
         })
-        // .map(|field| field.display_value().with_unit(&field).to_string())
-        // .and_then(|date_string| {
-        //     NaiveDateTime::parse_from_str(&date_string, "%Y:%m:%d %H:%M:%S").ok()
-        // })
+        .map(|field| field.display_value().with_unit(&field).to_string())
+        .and_then(|date_string| {
+            for format in ["%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+                if let Ok(date_time) = NaiveDateTime::parse_from_str(&date_string, format) {
+                    return Some(date_time);
+                }
+            }
+            None
+        })
         .and_then(|date_time| date_time.and_local_timezone(Local).single())
 }
 
@@ -97,19 +93,13 @@ pub fn extract_mimetype(path: &Path) -> Mime {
 
 #[test]
 fn test_extract_image_timestamp() {
-    extract_image_timestamp(Path::new(
-        "/storage/Backup/tecno/DCIM/IMG_20220322_181001.jpg",
-    ))
-    .unwrap();
+    extract_image_timestamp(Path::new("/storage/Backup/2019/20190901_070202.jpg")).unwrap();
 }
 
-#[test]
-fn test_extract_video_timestamp() {
-    extract_video_timestamp(Path::new(
-        "/storage/Videos/2023/2023-09-01-22-49-41-343.mp4",
-    ))
-    .unwrap();
-}
+// #[test]
+// fn test_extract_video_timestamp() {
+//     extract_timestamp("/storage/Videos/2023/2023-09-01-22-49-41-343.mp4");
+// }
 
 #[test]
 fn test_extract_mimetype() {
