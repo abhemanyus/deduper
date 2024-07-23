@@ -1,6 +1,7 @@
 use std::{
     fs::{metadata, File},
     io::BufReader,
+    path::Path,
     time::UNIX_EPOCH,
 };
 
@@ -8,27 +9,28 @@ use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use exif::{In, Tag};
 
 use ffmpeg_next as ffmpeg;
+use mime_guess::Mime;
 
-pub fn extract_timestamp(path: &str) -> DateTime<Local> {
-    let mimetype = extract_mimetype(path);
-    if mimetype.starts_with("image/") {
-        if let Some(timestamp) = extract_image_timestamp(path) {
-            timestamp
-        } else {
-            extract_filesystem_timestamp(path)
-        }
-    } else if mimetype.starts_with("video/") {
-        if let Some(timestamp) = extract_video_timestamp(path) {
-            timestamp
-        } else {
-            extract_filesystem_timestamp(path)
-        }
-    } else {
-        extract_filesystem_timestamp(path)
-    }
-}
+// pub fn extract_timestamp(path: &str) -> DateTime<Local> {
+//     let mimetype = extract_mimetype(path);
+//     if mimetype.starts_with("image/") {
+//         if let Some(timestamp) = extract_image_timestamp(path) {
+//             timestamp
+//         } else {
+//             extract_filesystem_timestamp(path)
+//         }
+//     } else if mimetype.starts_with("video/") {
+//         if let Some(timestamp) = extract_video_timestamp(path) {
+//             timestamp
+//         } else {
+//             extract_filesystem_timestamp(path)
+//         }
+//     } else {
+//         extract_filesystem_timestamp(path)
+//     }
+// }
 
-fn extract_filesystem_timestamp(path: &str) -> DateTime<Local> {
+pub fn extract_filesystem_timestamp(path: &Path) -> Option<DateTime<Local>> {
     metadata(path)
         .ok()
         .and_then(|metadata| metadata.modified().ok())
@@ -38,10 +40,9 @@ fn extract_filesystem_timestamp(path: &str) -> DateTime<Local> {
                 .timestamp_opt(duration.as_secs() as i64, duration.subsec_nanos())
                 .single()
         })
-        .unwrap()
 }
 
-fn extract_image_timestamp(path: &str) -> Option<DateTime<Local>> {
+pub fn extract_image_timestamp(path: &Path) -> Option<DateTime<Local>> {
     File::open(path)
         .ok()
         .map(|file| BufReader::new(file))
@@ -49,15 +50,31 @@ fn extract_image_timestamp(path: &str) -> Option<DateTime<Local>> {
             let exif_reader = exif::Reader::new();
             exif_reader.read_from_container(&mut buf).ok()
         })
-        .and_then(|exif_data| exif_data.get_field(Tag::DateTime, In::PRIMARY).cloned())
-        .map(|field| field.display_value().with_unit(&field).to_string())
-        .and_then(|date_string| {
-            NaiveDateTime::parse_from_str(&date_string, "%Y:%m:%d %H:%M:%S").ok()
+        .and_then(|exif_data| {
+            for tag in [Tag::DateTime, Tag::DateTimeOriginal, Tag::DateTimeDigitized] {
+                dbg!(tag);
+                if let Some(field) = exif_data.get_field(tag, In::PRIMARY) {
+                    dbg!(field);
+                    dbg!(field.display_value().with_unit(field).to_string().as_str());
+                    if let Ok(date_time) = NaiveDateTime::parse_from_str(
+                        field.display_value().with_unit(field).to_string().as_str(),
+                        "%Y:%m:%d %H:%M:%S",
+                    ) {
+                        dbg!(date_time);
+                        return Some(date_time);
+                    }
+                }
+            }
+            None
         })
+        // .map(|field| field.display_value().with_unit(&field).to_string())
+        // .and_then(|date_string| {
+        //     NaiveDateTime::parse_from_str(&date_string, "%Y:%m:%d %H:%M:%S").ok()
+        // })
         .and_then(|date_time| date_time.and_local_timezone(Local).single())
 }
 
-fn extract_video_timestamp(path: &str) -> Option<DateTime<Local>> {
+pub fn extract_video_timestamp(path: &Path) -> Option<DateTime<Local>> {
     ffmpeg::init().expect("could not initialize ffmpeg");
 
     ffmpeg::format::input(path)
@@ -74,26 +91,32 @@ fn extract_video_timestamp(path: &str) -> Option<DateTime<Local>> {
         .and_then(|date_time| date_time.and_local_timezone(Local).single())
 }
 
-fn extract_mimetype(path: &str) -> String {
-    mime_guess::from_path(path)
-        .first_or_octet_stream()
-        .to_string()
+pub fn extract_mimetype(path: &Path) -> Mime {
+    mime_guess::from_path(path).first_or_octet_stream()
 }
 
 #[test]
 fn test_extract_image_timestamp() {
-    extract_timestamp("/storage/Pictures/scans/blood_12_08_2023.jpeg");
+    extract_image_timestamp(Path::new(
+        "/storage/Backup/tecno/DCIM/IMG_20220322_181001.jpg",
+    ))
+    .unwrap();
 }
 
 #[test]
 fn test_extract_video_timestamp() {
-    extract_timestamp("/storage/Videos/2023/2023-09-01-22-49-41-343.mp4");
+    extract_video_timestamp(Path::new(
+        "/storage/Videos/2023/2023-09-01-22-49-41-343.mp4",
+    ))
+    .unwrap();
 }
 
 #[test]
 fn test_extract_mimetype() {
     assert_eq!(
         "video/mp4",
-        extract_mimetype("/storage/Videos/2023/2023-09-01-22-49-41-343.mp4")
+        extract_mimetype(Path::new(
+            "/storage/Videos/2023/2023-09-01-22-49-41-343.mp4"
+        ))
     );
 }
