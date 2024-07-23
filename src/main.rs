@@ -2,10 +2,31 @@ mod csv;
 mod extractor;
 mod hasher;
 
-// use extractors::extract_timestamp;
-// use hasher::file_hash;
+use std::path::PathBuf;
 
-fn main() {}
+use clap::Parser;
+
+fn main() {
+    let cli = Cli::parse();
+    println!(
+        "sources: \n\t{}",
+        cli.sources
+            .iter()
+            .map(|s| s.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("\n\t")
+    );
+    println!("destination: {}", cli.destination.to_string_lossy());
+}
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    #[arg(short, long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    sources: Vec<PathBuf>,
+    #[arg(short, long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    destination: PathBuf,
+}
 
 #[test]
 fn test_parse_csv() {

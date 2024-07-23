@@ -57,16 +57,6 @@ fn extract_image_timestamp(path: &str) -> Option<DateTime<Local>> {
         .and_then(|date_time| date_time.and_local_timezone(Local).single())
 }
 
-// fn extract_image_timestamp(path: &str) -> Option<DateTime<Local>> {
-//     rexiv2::Metadata::new_from_path(path)
-//         .ok()
-//         .and_then(|meta| meta.get_tag_string("Exif.Image.DateTime").ok())
-// .and_then(|date_string| {
-//     NaiveDateTime::parse_from_str(&date_string, "%Y:%m:%d %H:%M:%S").ok()
-// })
-// .and_then(|date_time| date_time.and_local_timezone(Local).single())
-// }
-
 fn extract_video_timestamp(path: &str) -> Option<DateTime<Local>> {
     ffmpeg::init().expect("could not initialize ffmpeg");
 
@@ -84,42 +74,11 @@ fn extract_video_timestamp(path: &str) -> Option<DateTime<Local>> {
         .and_then(|date_time| date_time.and_local_timezone(Local).single())
 }
 
-// fn extract_video_timestamp(path: &str) -> Option<DateTime<Local>> {
-//     std::process::Command::new("ffprobe")
-//         .args(&[
-//             "-v",
-//             "quiet",
-//             "-print_format",
-//             "csv=nk=1:p=0",
-//             "-show_entries",
-//             "format_tags=creation_time",
-//         ])
-//         .arg(path)
-//         .output()
-//         .ok()
-//         .and_then(|output| String::from_utf8(output.stdout).ok())
-//         .and_then(|date_string| {
-//             NaiveDateTime::parse_from_str(&date_string.trim(), "%Y-%m-%dT%H:%M:%S%.f%Z").ok()
-//         })
-//         .and_then(|date_time| date_time.and_local_timezone(Local).single())
-// }
-
 fn extract_mimetype(path: &str) -> String {
     mime_guess::from_path(path)
         .first_or_octet_stream()
         .to_string()
 }
-
-// fn extract_mimetype(path: &str) -> String {
-//     std::process::Command::new("file")
-//         .args(&["-b", "--mime-type"])
-//         .arg(path)
-//         .output()
-//         .ok()
-//         .and_then(|output| String::from_utf8(output.stdout).ok())
-//         .and_then(|mimetype| Some(mimetype.trim().to_string()))
-//         .unwrap()
-// }
 
 #[test]
 fn test_extract_image_timestamp() {
