@@ -105,8 +105,8 @@ fn main() {
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    #[arg(short, long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    #[arg(short, long, value_hint = clap::ValueHint::DirPath, num_args = 1.., required = true)]
     sources: Vec<PathBuf>,
-    #[arg(short, long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    #[arg(short, long, value_hint = clap::ValueHint::DirPath, required = true)]
     destination: PathBuf,
 }
