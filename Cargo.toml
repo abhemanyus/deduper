@@ -1,0 +1,8 @@
+[package]
+name = "gotime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = "0.4.39"
+mp4 = "0.14.0"
