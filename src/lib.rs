@@ -1,25 +1,24 @@
-use std::{error::Error, process::Command};
+use std::error::Error;
 
-use chrono::NaiveDateTime;
+use chrono::{DateTime, FixedOffset};
+use nom_exif::{Exif, ExifIter, ExifTag, MediaParser, MediaSource, TrackInfo, TrackInfoTag};
 
-pub fn extract_date(file_path: &str) -> Result<NaiveDateTime, Box<dyn Error>> {
-    let output = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            "-show_entries",
-            "format_tags=creation_time",
-            file_path,
-        ])
-        .output()?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr))?;
+pub fn extract_date(file_path: &str) -> Result<DateTime<FixedOffset>, Box<dyn Error>> {
+    let mut parser = MediaParser::new();
+    let ms = MediaSource::file_path(file_path)?;
+    if ms.has_exif() {
+        let iter: ExifIter = parser.parse(ms)?;
+        let info: Exif = iter.into();
+        let time_tag = info.get(ExifTag::DateTimeOriginal).unwrap();
+        let time_stamp = time_tag.as_time().unwrap();
+        return Ok(time_stamp);
+    } else if ms.has_track() {
+        let info: TrackInfo = parser.parse(ms)?;
+        let time_tag = info.get(TrackInfoTag::CreateDate).unwrap();
+        let time_stamp = time_tag.as_time().unwrap();
+        return Ok(time_stamp);
     }
-    let time_string = String::from_utf8_lossy(&output.stdout);
-    let time = NaiveDateTime::parse_from_str(&time_string.trim(), "%Y-%m-%dT%H:%M:%S%.6fZ")?;
-    Ok(time)
+    unimplemented!();
 }
 
 #[cfg(test)]

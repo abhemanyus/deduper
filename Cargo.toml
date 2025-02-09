@@ -5,4 +5,4 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4.39"
-mp4 = "0.14.0"
+nom-exif = "2.3.1"
