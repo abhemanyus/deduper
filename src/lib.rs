@@ -18,7 +18,7 @@ pub fn extract_date(file_path: &str) -> Result<DateTime<FixedOffset>, Box<dyn Er
         let time_stamp = time_tag.as_time().unwrap();
         return Ok(time_stamp);
     }
-    unimplemented!();
+    Err("no time found")?
 }
 
 #[cfg(test)]
