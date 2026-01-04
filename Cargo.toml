@@ -7,7 +7,6 @@ edition = "2021"
 base64ct = { version = "1.6.0", features = ["alloc"] }
 chrono = "0.4.38"
 clap = { version = "4.5.9", features = ["derive"] }
-crossbeam = "0.8.4"
 ffmpeg-next = { version = "7.0.2", features = ["codec", "format"], default-features = false }
 kamadak-exif = "0.5.5"
 mime_guess = "2.0.5"

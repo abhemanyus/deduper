@@ -9,7 +9,6 @@ use std::{
 
 use chrono::Datelike;
 use clap::Parser;
-use crossbeam::channel::{bounded, Receiver};
 use walkdir::WalkDir;
 
 use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
@@ -37,15 +36,6 @@ fn main() {
 }
 
 fn run(cli: Cli, hash_pool: &ThreadPool) {
-    let (tx, rx) = bounded::<WorkItem>(256);
-
-    for _ in 0..hash_pool.current_num_threads() {
-        let rx = rx.clone();
-        let destination = cli.destination.clone();
-        let dry_run = cli.dry_run;
-
-        hash_pool.spawn(move || hash_worker(rx, destination, dry_run));
-    }
     eprintln!(
         "Sources:\n\t{}",
         cli.sources
@@ -56,40 +46,35 @@ fn run(cli: Cli, hash_pool: &ThreadPool) {
     );
     eprintln!("Destination: {}", cli.destination.display());
 
-    cli.sources.par_iter().for_each(|source| {
-        WalkDir::new(source)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_file())
-            .for_each(|entry| {
-                // blocks if channel is full
-                let _ = tx.send(WorkItem {
-                    path: entry.path().to_path_buf(),
-                });
-            });
-    });
-
-    drop(tx); // signal completion
+    cli.sources
+        .par_iter()
+        .for_each(|source| process_source(source, &cli.destination, cli.dry_run, hash_pool));
 }
 
-struct WorkItem {
-    path: PathBuf,
+fn process_source(source: &Path, destination: &Path, dry_run: bool, hash_pool: &ThreadPool) {
+    WalkDir::new(source)
+        .follow_links(false)
+        .into_iter()
+        .par_bridge()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .for_each(|entry| {
+            if let Err(err) = process_file(entry.path(), destination, dry_run, hash_pool) {
+                eprintln!("❌ {}: {err}", entry.path().display());
+            }
+        });
 }
 
-fn hash_worker(rx: Receiver<WorkItem>, destination: PathBuf, dry_run: bool) {
-    for item in rx {
-        if let Err(err) = process_file(&item.path, &destination, dry_run) {
-            eprintln!("❌ {}: {err}", item.path.display());
-        }
-    }
-}
-
-fn process_file(path: &Path, destination: &Path, dry_run: bool) -> Result<(), String> {
+fn process_file(
+    path: &Path,
+    destination: &Path,
+    dry_run: bool,
+    hash_pool: &ThreadPool,
+) -> Result<(), String> {
     let mime_type = extractor::extract_mimetype(path);
 
     let timestamp = extract_timestamp(path).ok_or("missing timestamp")?;
-    let hash = hasher::file_hash(path).ok_or("hashing failed")?;
+    let hash = hash_pool.install(|| hasher::file_hash(path).ok_or("hashing failed"))?;
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
