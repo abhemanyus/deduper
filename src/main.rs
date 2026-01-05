@@ -5,6 +5,7 @@ mod hasher;
 use std::{
     fs::create_dir_all,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use chrono::Datelike;
@@ -20,6 +21,10 @@ use std::os::unix::fs::symlink;
 
 fn main() {
     let cli = Cli::parse();
+
+    let conn = rusqlite::Connection::open(&cli.database).expect("failed to open database");
+    let conn = Arc::new(Mutex::new(conn));
+
     let io_pool = ThreadPoolBuilder::new()
         .num_threads(cli.threads) // tune this
         .thread_name(|i| format!("worker-{i}"))
@@ -32,10 +37,12 @@ fn main() {
         .build()
         .expect("failed to build hash pool");
 
-    io_pool.install(|| run(cli, &hash_pool));
+    io_pool.install(|| run(cli, &hash_pool, conn));
 }
 
-fn run(cli: Cli, hash_pool: &ThreadPool) {
+type Connection = Arc<Mutex<rusqlite::Connection>>;
+
+fn run(cli: Cli, hash_pool: &ThreadPool, conn: Connection) {
     eprintln!(
         "Sources:\n\t{}",
         cli.sources
@@ -48,18 +55,22 @@ fn run(cli: Cli, hash_pool: &ThreadPool) {
 
     cli.sources
         .par_iter()
-        .for_each(|source| process_source(source, &cli.destination, cli.dry_run, hash_pool));
-}
-
-fn process_source(source: &Path, destination: &Path, dry_run: bool, hash_pool: &ThreadPool) {
-    WalkDir::new(source)
-        .follow_links(false)
-        .into_iter()
-        .par_bridge()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
+        .flat_map(|source| {
+            WalkDir::new(source)
+                .follow_links(false)
+                .into_iter()
+                .par_bridge()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_type().is_file())
+        })
         .for_each(|entry| {
-            if let Err(err) = process_file(entry.path(), destination, dry_run, hash_pool) {
+            if let Err(err) = process_file(
+                entry.path(),
+                &cli.destination,
+                cli.dry_run,
+                hash_pool,
+                conn.clone(),
+            ) {
                 eprintln!("❌ {}: {err}", entry.path().display());
             }
         });
@@ -70,6 +81,7 @@ fn process_file(
     destination: &Path,
     dry_run: bool,
     hash_pool: &ThreadPool,
+    conn: Connection,
 ) -> Result<(), String> {
     let mime_type = extractor::extract_mimetype(path);
 
@@ -124,4 +136,7 @@ struct Cli {
 
     #[arg(long, default_value_t = false)]
     dry_run: bool,
+
+    #[arg(short, long, value_hint = clap::ValueHint::FilePath, required = true)]
+    database: PathBuf,
 }

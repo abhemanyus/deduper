@@ -1,16 +1,10 @@
-use base64ct::Base64UrlUnpadded;
-use base64ct::Encoding;
-use sha2::Digest;
-use sha2::Sha256;
-use std::fs::File;
 use std::path::Path;
 
 pub fn file_hash(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let mut sha256 = Sha256::new();
-    std::io::copy(&mut file, &mut sha256).ok()?;
-    let hash = sha256.finalize();
-    Some(Base64UrlUnpadded::encode_string(&hash[..16]))
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_mmap_rayon(path).ok()?;
+    let hash = hasher.finalize();
+    Some(hash.to_hex().to_string())
 }
 
 #[test]

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-base64ct = { version = "1.6.0", features = ["alloc"] }
+blake3 = { version = "1.8.2", features = ["mmap", "rayon"] }
 chrono = "0.4.38"
 clap = { version = "4.5.9", features = ["derive"] }
 ffmpeg-next = { version = "7.0.2", features = ["codec", "format"], default-features = false }
@@ -12,6 +12,6 @@ kamadak-exif = "0.5.5"
 mime_guess = "2.0.5"
 num_cpus = "1.17.0"
 rayon = "1.10.0"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
 serde = { version = "1.0.204", features = ["derive"] }
-sha2 = "0.10.8"
 walkdir = "2.5.0"
