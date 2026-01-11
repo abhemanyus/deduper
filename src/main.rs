@@ -1,16 +1,11 @@
 mod csv;
+mod database;
 mod extractor;
 mod hasher;
 
 use std::{
     fs::create_dir_all,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
-    thread::{sleep, spawn},
-    time::Duration,
 };
 
 use chrono::Datelike;
@@ -19,18 +14,15 @@ use walkdir::WalkDir;
 
 use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
 
-use crate::extractor::extract_timestamp;
+use crate::{database::DB, extractor::extract_timestamp};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
 fn main() {
     let cli = Cli::parse();
 
-    let conn = rusqlite::Connection::open(&cli.database).expect("failed to open database");
-    let conn = Arc::new(Mutex::new(conn));
+    let db = DB::new(&cli.database).expect("failed to open database");
 
     let io_pool = ThreadPoolBuilder::new()
         .num_threads(cli.threads) // tune this
@@ -44,17 +36,10 @@ fn main() {
         .build()
         .expect("failed to build hash pool");
 
-    spawn(|| loop {
-        println!("Open files: {}", COUNTER.load(Ordering::Relaxed));
-        sleep(Duration::from_millis(100));
-    });
-
-    io_pool.install(|| run(cli, &hash_pool, conn));
+    io_pool.install(|| run(cli, &hash_pool, db));
 }
 
-type Connection = Arc<Mutex<rusqlite::Connection>>;
-
-fn run(cli: Cli, hash_pool: &ThreadPool, conn: Connection) {
+fn run(cli: Cli, hash_pool: &ThreadPool, db: DB) {
     eprintln!(
         "Sources:\n\t{}",
         cli.sources
@@ -81,7 +66,7 @@ fn run(cli: Cli, hash_pool: &ThreadPool, conn: Connection) {
                 &cli.destination,
                 cli.dry_run,
                 hash_pool,
-                conn.clone(),
+                db.clone(),
             ) {
                 eprintln!("❌ {}: {err}", entry.path().display());
             }
@@ -93,9 +78,8 @@ fn process_file(
     destination: &Path,
     dry_run: bool,
     hash_pool: &ThreadPool,
-    conn: Connection,
+    db: DB,
 ) -> Result<(), String> {
-    COUNTER.fetch_add(1, Ordering::Relaxed);
     let mime_type = extractor::extract_mimetype(path);
 
     let timestamp = extract_timestamp(path).ok_or("missing timestamp")?;
@@ -126,7 +110,6 @@ fn process_file(
     {
         std::fs::copy(path, &dest_path).map_err(|e| format!("copy failed: {e}"))?;
     }
-    COUNTER.fetch_sub(1, Ordering::Relaxed);
     Ok(())
 }
 

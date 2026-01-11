@@ -1,0 +1,107 @@
+use std::{
+    path::Path,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
+use chrono::{DateTime, Local};
+
+#[derive(Clone)]
+pub struct DB {
+    connection: Arc<Mutex<rusqlite::Connection>>,
+}
+
+pub struct LockDB<'a> {
+    connection: MutexGuard<'a, rusqlite::Connection>,
+}
+
+#[derive(Clone, Debug)]
+pub struct File {
+    pub path: String,
+    pub size_bytes: i64,
+    pub blake3: String,
+    pub created_at: DateTime<Local>,
+}
+
+impl DB {
+    pub fn new(path: &Path) -> Result<Self, rusqlite::Error> {
+        let conn = rusqlite::Connection::open(path)?;
+        conn.execute(Self::CREATE_TABLE_FILES, ())?;
+        let conn = Arc::new(Mutex::new(conn));
+        Ok(Self { connection: conn })
+    }
+    pub fn lock<'a>(&'a self) -> LockDB<'a> {
+        LockDB {
+            connection: self.connection.lock().unwrap(),
+        }
+    }
+    const CREATE_TABLE_FILES: &'static str = r#"
+        CREATE TABLE IF NOT EXISTS files (
+            path        TEXT PRIMARY KEY,
+            size_bytes  INTEGER NOT NULL CHECK (size_bytes >= 0),
+            blake3      TEXT    NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_files_blake3 ON files (blake3);
+        CREATE INDEX idx_files_created ON files (created_at);
+    "#;
+}
+impl<'a> LockDB<'a> {
+    pub fn find_dup_files(
+        &self,
+        blake3: &str,
+        size_bytes: i64,
+    ) -> Result<Vec<File>, rusqlite::Error> {
+        let rows: Result<Vec<File>, rusqlite::Error> = self
+            .connection
+            .prepare_cached(Self::FIND_DUP_FILES)?
+            .query_map((blake3, size_bytes), |row| {
+                Ok(File {
+                    path: row.get(0)?,
+                    size_bytes: row.get(1)?,
+                    blake3: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+    const FIND_DUP_FILES: &'static str = r#"
+        SELECT *
+        FROM files
+        WHERE blake3 = ?1
+        AND size_bytes = ?2;
+    "#;
+    pub fn find_identical_signs(&self) -> Result<Vec<(String, i64, i64)>, rusqlite::Error> {
+        let rows = self
+            .connection
+            .prepare_cached(Self::FIND_IDENTICAL_SIGNS)?
+            .query_map((), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, rusqlite::Error>>();
+        rows
+    }
+    const FIND_IDENTICAL_SIGNS: &'static str = r#"
+        SELECT blake3, size_bytes, COUNT(*) AS cnt
+        FROM files
+        GROUP BY blake3, size_bytes
+        HAVING cnt > 1;
+    "#;
+    const INSERT_FILE: &'static str = r#"
+        INSERT INTO files (
+            path,
+            size_bytes,
+            blake3,
+            created_at
+        ) VALUES (
+            ?1,
+            ?2,
+            ?3,
+            ?4
+        );
+    "#;
+}
