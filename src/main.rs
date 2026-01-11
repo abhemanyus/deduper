@@ -9,7 +9,7 @@ use std::{
 };
 
 use chrono::Datelike;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use walkdir::WalkDir;
 
 use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
@@ -24,8 +24,17 @@ fn main() {
 
     let db = DB::new(&cli.database).expect("failed to open database");
 
+    match cli.command {
+        Commands::Scan { sources, threads } => scan(sources, threads, db),
+        Commands::Stats => stats(db),
+        Commands::Build { destination } => build(destination, db),
+    }
+    .unwrap();
+}
+
+fn scan(sources: Vec<PathBuf>, threads: usize, db: DB) -> Result<(), String> {
     let io_pool = ThreadPoolBuilder::new()
-        .num_threads(cli.threads) // tune this
+        .num_threads(threads) // tune this
         .thread_name(|i| format!("worker-{i}"))
         .build()
         .expect("failed to build thread pool");
@@ -35,22 +44,44 @@ fn main() {
         .thread_name(|i| format!("hash-{i}"))
         .build()
         .expect("failed to build hash pool");
-
-    io_pool.install(|| run(cli, &hash_pool, db));
+    io_pool.install(|| run(sources, &hash_pool, db));
+    Ok(())
 }
 
-fn run(cli: Cli, hash_pool: &ThreadPool, db: DB) {
+fn stats(db: DB) -> Result<(), String> {
+    println!(
+        "Redundant files: {}",
+        db.lock().count_redundant_files().unwrap()
+    );
+    Ok(())
+}
+
+fn build(destination: PathBuf, db: DB) -> Result<(), String> {
+    // let ext = path
+    //     .extension()
+    //     .and_then(|ext| ext.to_str())
+    //     .unwrap_or("bin");
+
+    // let mime_type = extractor::extract_mimetype(path);
+    // let dest_dir = destination
+    //     .join(mime_type.type_().as_str())
+    //     .join(timestamp.year().to_string());
+    // let filename = format!("{}_{}.{}", timestamp.format("%F_%X").to_string(), hash, ext);
+    // let dest_path = dest_dir.join(filename);
+    Ok(())
+}
+
+fn run(sources: Vec<PathBuf>, hash_pool: &ThreadPool, db: DB) {
     eprintln!(
         "Sources:\n\t{}",
-        cli.sources
+        sources
             .iter()
             .map(|s| s.display().to_string())
             .collect::<Vec<_>>()
             .join("\n\t")
     );
-    eprintln!("Destination: {}", cli.destination.display());
 
-    cli.sources
+    sources
         .par_iter()
         .flat_map(|source| {
             WalkDir::new(source)
@@ -61,79 +92,60 @@ fn run(cli: Cli, hash_pool: &ThreadPool, db: DB) {
                 .par_bridge()
         })
         .for_each(|entry| {
-            if let Err(err) = process_file(
-                entry.path(),
-                &cli.destination,
-                cli.dry_run,
-                hash_pool,
-                db.clone(),
-            ) {
+            if let Err(err) = process_file(entry.path(), hash_pool, db.clone()) {
                 eprintln!("❌ {}: {err}", entry.path().display());
             }
         });
 }
 
-fn process_file(
-    path: &Path,
-    destination: &Path,
-    dry_run: bool,
-    hash_pool: &ThreadPool,
-    db: DB,
-) -> Result<(), String> {
-    let mime_type = extractor::extract_mimetype(path);
-
+fn process_file(path: &Path, hash_pool: &ThreadPool, db: DB) -> Result<(), String> {
     let timestamp = extract_timestamp(path).ok_or("missing timestamp")?;
+    let size_bytes = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     let hash = hash_pool.install(|| hasher::file_hash(path).ok_or("hashing failed"))?;
-    let ext = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("bin");
+    let db = db.lock();
 
-    let dest_dir = destination
-        .join(mime_type.type_().as_str())
-        .join(timestamp.year().to_string());
-    let filename = format!("{}_{}.{}", timestamp.format("%F_%X").to_string(), hash, ext);
-    let dest_path = dest_dir.join(filename);
+    db.insert_file(&database::File {
+        path: path.display().to_string(),
+        size_bytes: size_bytes.try_into().unwrap_or(0),
+        blake3: hash,
+        created_at: timestamp,
+    })
+    .map_err(|e| e.to_string())?;
 
-    if dry_run {
-        eprintln!("[DRY-RUN] {} → {}", path.display(), dest_path.display());
-        return Ok(());
-    }
-    create_dir_all(&dest_dir).map_err(|e| format!("mkdir failed: {e}"))?;
-
-    #[cfg(unix)]
-    {
-        symlink(path, &dest_path).map_err(|_| "symlink already exists or failed")?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        std::fs::copy(path, &dest_path).map_err(|e| format!("copy failed: {e}"))?;
-    }
     Ok(())
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
+#[command(name = "dedup")]
+#[command(about = "File deduplication tool")]
 #[command(version, about)]
 struct Cli {
-    #[arg(
+    #[command(subcommand)]
+    command: Commands,
+
+    #[arg(short, long, value_hint = clap::ValueHint::FilePath, required = true)]
+    database: PathBuf,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Scan {
+        #[arg(
         short,
         long,
         value_hint = clap::ValueHint::DirPath,
         num_args = 1..,
         required = true
     )]
-    sources: Vec<PathBuf>,
+        sources: Vec<PathBuf>,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
 
-    #[arg(short, long, value_hint = clap::ValueHint::DirPath, required = true)]
-    destination: PathBuf,
+    Stats,
 
-    #[arg(long, default_value_t = 4)]
-    threads: usize,
-
-    #[arg(long, default_value_t = false)]
-    dry_run: bool,
-
-    #[arg(short, long, value_hint = clap::ValueHint::FilePath, required = true)]
-    database: PathBuf,
+    Build {
+        #[arg(short, long, value_hint = clap::ValueHint::DirPath, required = true)]
+        destination: PathBuf,
+    },
 }

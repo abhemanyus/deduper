@@ -11,7 +11,7 @@ pub struct DB {
 }
 
 pub struct LockDB<'a> {
-    connection: MutexGuard<'a, rusqlite::Connection>,
+    pub connection: MutexGuard<'a, rusqlite::Connection>,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +61,12 @@ impl<'a> LockDB<'a> {
             ),
         )?;
         Ok(())
+    }
+
+    pub fn count_redundant_files(&self) -> Result<i64, rusqlite::Error> {
+        self.connection
+            .prepare_cached(Self::COUNT_REDUNDANT_FILES)?
+            .query_one((), |f| f.get(0))
     }
 
     pub fn find_dup_files(
@@ -116,5 +122,15 @@ impl<'a> LockDB<'a> {
             blake3,
             created_at
         ) VALUES (?1, ?2, ?3, ?4);
+    "#;
+
+    const COUNT_REDUNDANT_FILES: &'static str = r#"
+        SELECT SUM(cnt - 1) AS redundant_files
+        FROM (
+            SELECT COUNT(*) AS cnt
+            FROM files
+            GROUP BY blake3, size_bytes
+            HAVING cnt > 1
+        );
     "#;
 }
