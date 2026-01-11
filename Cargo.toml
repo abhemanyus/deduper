@@ -1,7 +1,7 @@
 [package]
 name = "deduper"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 blake3 = { version = "1.8.2", features = ["mmap", "rayon"] }
@@ -11,6 +11,7 @@ ffmpeg-next = { version = "7.0.2", features = ["codec", "format"], default-featu
 kamadak-exif = "0.5.5"
 mime_guess = "2.0.5"
 num_cpus = "1.17.0"
+parse-size = "1.1.0"
 rayon = "1.10.0"
 rusqlite = { version = "0.38.0", features = ["bundled", "chrono"] }
 serde = { version = "1.0.204", features = ["derive"] }

@@ -5,6 +5,7 @@ mod hasher;
 
 use std::{
     fs::create_dir_all,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
 };
 
@@ -12,10 +13,12 @@ use chrono::{Datelike, Local, TimeZone};
 use clap::{Parser, Subcommand};
 use walkdir::WalkDir;
 
-use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
+use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
+
+use parse_size::parse_size;
 
 use crate::{
-    database::{LockDB, DB},
+    database::{DB, LockDB},
     extractor::extract_timestamp,
 };
 
@@ -30,7 +33,11 @@ fn main() {
     match cli.command {
         Commands::Scan { sources, threads } => scan(sources, threads, db),
         Commands::Stats => stats(db),
-        Commands::Build { destination } => build(destination, db),
+        Commands::Build {
+            destination,
+            selector,
+            split_at,
+        } => build(destination, db, selector, split_at),
     }
     .unwrap();
 }
@@ -60,11 +67,21 @@ fn stats(db: DB) -> Result<(), String> {
     Ok(())
 }
 
-fn build(destination: PathBuf, db: DB) -> Result<(), String> {
+fn build(
+    destination: PathBuf,
+    db: DB,
+    selector: Option<String>,
+    split_at: Option<NonZeroUsize>,
+) -> Result<(), String> {
     let db = db.lock();
     let mut stmt = db
         .connection
-        .prepare(LockDB::FIND_UNIQUE_FILES)
+        .prepare(if let Some(split_at) = split_at {
+            println!("Splitting archive at {split_at} bytes!");
+            LockDB::FIND_UNIQUE_FILES_ORDERED
+        } else {
+            LockDB::FIND_UNIQUE_FILES
+        })
         .map_err(|e| e.to_string())?;
     let unique_files = stmt
         .query_map((), |row| {
@@ -77,6 +94,8 @@ fn build(destination: PathBuf, db: DB) -> Result<(), String> {
             })
         })
         .map_err(|e| e.to_string())?;
+
+    let mut total_bytes = 0;
     for file in unique_files {
         let file = file.map_err(|e| e.to_string())?;
         let path = Path::new(&file.path);
@@ -88,9 +107,25 @@ fn build(destination: PathBuf, db: DB) -> Result<(), String> {
             .and_then(|ext| ext.to_str())
             .unwrap_or("bin");
 
-        let dest_dir = destination
-            .join(mime_type.type_().as_str())
-            .join(timestamp.year().to_string());
+        let media_type = mime_type.type_().as_str();
+
+        if let Some(ref selector) = selector
+            && media_type != selector
+        {
+            continue;
+        }
+
+        total_bytes += file.size_bytes.try_into().unwrap_or(0);
+        let dest_dir = if let Some(split_at) = split_at {
+            destination
+                .join(format!("shard_{}", (total_bytes / split_at) + 1))
+                .join(media_type)
+                .join(timestamp.year().to_string())
+        } else {
+            destination
+                .join(media_type)
+                .join(timestamp.year().to_string())
+        };
         let time_string = timestamp.format("%d-%m-%Y_%H:%M:%S").to_string();
         let filename = format!("{}.{}", time_string, ext);
         let mut dest_path = dest_dir.join(filename);
@@ -185,12 +220,12 @@ struct Cli {
 enum Commands {
     Scan {
         #[arg(
-        short,
-        long,
-        value_hint = clap::ValueHint::DirPath,
-        num_args = 1..,
-        required = true
-    )]
+            short,
+            long,
+            value_hint = clap::ValueHint::DirPath,
+            num_args = 1..,
+            required = true
+        )]
         sources: Vec<PathBuf>,
         #[arg(long, default_value_t = 4)]
         threads: usize,
@@ -199,7 +234,24 @@ enum Commands {
     Stats,
 
     Build {
-        #[arg(short, long, value_hint = clap::ValueHint::DirPath, required = true)]
+        #[arg(
+            short,
+            long,
+            value_hint = clap::ValueHint::DirPath,
+            required = true
+        )]
         destination: PathBuf,
+        #[arg(short, long)]
+        selector: Option<String>,
+        #[arg(long, value_parser = non_zero_bytes)]
+        split_at: Option<NonZeroUsize>,
     },
+}
+
+fn non_zero_bytes(s: &str) -> Result<NonZeroUsize, String> {
+    let val = parse_size(s).map_err(|e| e.to_string())?;
+    Ok(
+        NonZeroUsize::new(val.try_into().map_err(|_| "value out of bounds")?)
+            .ok_or("value cannot be zero")?,
+    )
 }

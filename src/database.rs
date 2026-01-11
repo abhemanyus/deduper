@@ -107,6 +107,16 @@ impl<'a> LockDB<'a> {
             .collect()
     }
 
+    pub const FIND_UNIQUE_FILES_ORDERED: &'static str = r#"
+        SELECT * FROM (
+        	SELECT *, ROW_NUMBER() OVER (PARTITION BY blake3, size_bytes)
+        	AS rn
+        	FROM files
+        	ORDER BY created_at ASC
+        ) ranked
+        WHERE rn = 1;
+    "#;
+
     pub const FIND_UNIQUE_FILES: &'static str = r#"
         SELECT * FROM (
         	SELECT *, ROW_NUMBER() OVER (PARTITION BY blake3, size_bytes)
