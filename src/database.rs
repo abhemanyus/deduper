@@ -63,6 +63,12 @@ impl<'a> LockDB<'a> {
         Ok(())
     }
 
+    pub fn count_files(&self) -> Result<i64, rusqlite::Error> {
+        self.connection
+            .prepare_cached(Self::COUNT_FILES)?
+            .query_one((), |f| f.get(0))
+    }
+
     pub fn count_redundant_files(&self) -> Result<i64, rusqlite::Error> {
         self.connection
             .prepare_cached(Self::COUNT_REDUNDANT_FILES)?
@@ -100,6 +106,20 @@ impl<'a> LockDB<'a> {
             })?
             .collect()
     }
+
+    pub const FIND_UNIQUE_FILES: &'static str = r#"
+        SELECT * FROM (
+        	SELECT *, ROW_NUMBER() OVER (PARTITION BY blake3, size_bytes)
+        	AS rn
+        	FROM files
+        ) ranked
+        WHERE rn = 1;
+    "#;
+
+    const COUNT_FILES: &'static str = r#"
+        SELECT COUNT(path) AS cnt
+        FROM files;
+    "#;
 
     const FIND_DUP_FILES: &'static str = r#"
         SELECT path, size_bytes, blake3, created_at

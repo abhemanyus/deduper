@@ -8,13 +8,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::Datelike;
+use chrono::{Datelike, Local, TimeZone};
 use clap::{Parser, Subcommand};
 use walkdir::WalkDir;
 
 use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
 
-use crate::{database::DB, extractor::extract_timestamp};
+use crate::{
+    database::{LockDB, DB},
+    extractor::extract_timestamp,
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -49,6 +52,7 @@ fn scan(sources: Vec<PathBuf>, threads: usize, db: DB) -> Result<(), String> {
 }
 
 fn stats(db: DB) -> Result<(), String> {
+    println!("Total files: {}", db.lock().count_files().unwrap());
     println!(
         "Redundant files: {}",
         db.lock().count_redundant_files().unwrap()
@@ -57,17 +61,67 @@ fn stats(db: DB) -> Result<(), String> {
 }
 
 fn build(destination: PathBuf, db: DB) -> Result<(), String> {
-    // let ext = path
-    //     .extension()
-    //     .and_then(|ext| ext.to_str())
-    //     .unwrap_or("bin");
+    let db = db.lock();
+    let mut stmt = db
+        .connection
+        .prepare(LockDB::FIND_UNIQUE_FILES)
+        .map_err(|e| e.to_string())?;
+    let unique_files = stmt
+        .query_map((), |row| {
+            let ts: i64 = row.get(3)?;
+            Ok(database::File {
+                path: row.get(0)?,
+                size_bytes: row.get(1)?,
+                blake3: row.get(2)?,
+                created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    for file in unique_files {
+        let file = file.map_err(|e| e.to_string())?;
+        let path = Path::new(&file.path);
+        let mime_type = extractor::extract_mimetype(path);
 
-    // let mime_type = extractor::extract_mimetype(path);
-    // let dest_dir = destination
-    //     .join(mime_type.type_().as_str())
-    //     .join(timestamp.year().to_string());
-    // let filename = format!("{}_{}.{}", timestamp.format("%F_%X").to_string(), hash, ext);
-    // let dest_path = dest_dir.join(filename);
+        let timestamp = file.created_at;
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("bin");
+
+        let dest_dir = destination
+            .join(mime_type.type_().as_str())
+            .join(timestamp.year().to_string());
+        let time_string = timestamp.format("%d-%m-%Y_%H:%M:%S").to_string();
+        let filename = format!("{}.{}", time_string, ext);
+        let mut dest_path = dest_dir.join(filename);
+
+        for i in 1..10 {
+            if dest_path.exists() {
+                let filename = format!("{}_{}.{}", time_string, i, ext);
+                dest_path = dest_dir.join(filename);
+            } else {
+                break;
+            }
+        }
+
+        create_dir_all(&dest_dir).map_err(|e| format!("mkdir failed: {e}"))?;
+
+        #[cfg(unix)]
+        {
+            symlink(path, &dest_path).map_err(|e| {
+                format!(
+                    "symlink already exists or failed {}: {}",
+                    dest_path.display(),
+                    e
+                )
+            })?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::copy(path, &dest_path).map_err(|e| format!("copy failed: {e}"))?;
+        }
+    }
     Ok(())
 }
 
