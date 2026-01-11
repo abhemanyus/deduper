@@ -5,7 +5,12 @@ mod hasher;
 use std::{
     fs::create_dir_all,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    thread::{sleep, spawn},
+    time::Duration,
 };
 
 use chrono::Datelike;
@@ -18,6 +23,8 @@ use crate::extractor::extract_timestamp;
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
     let cli = Cli::parse();
@@ -36,6 +43,11 @@ fn main() {
         .thread_name(|i| format!("hash-{i}"))
         .build()
         .expect("failed to build hash pool");
+
+    spawn(|| loop {
+        println!("Open files: {}", COUNTER.load(Ordering::Relaxed));
+        sleep(Duration::from_millis(100));
+    });
 
     io_pool.install(|| run(cli, &hash_pool, conn));
 }
@@ -59,9 +71,9 @@ fn run(cli: Cli, hash_pool: &ThreadPool, conn: Connection) {
             WalkDir::new(source)
                 .follow_links(false)
                 .into_iter()
-                .par_bridge()
                 .filter_map(Result::ok)
                 .filter(|e| e.file_type().is_file())
+                .par_bridge()
         })
         .for_each(|entry| {
             if let Err(err) = process_file(
@@ -83,6 +95,7 @@ fn process_file(
     hash_pool: &ThreadPool,
     conn: Connection,
 ) -> Result<(), String> {
+    COUNTER.fetch_add(1, Ordering::Relaxed);
     let mime_type = extractor::extract_mimetype(path);
 
     let timestamp = extract_timestamp(path).ok_or("missing timestamp")?;
@@ -113,6 +126,7 @@ fn process_file(
     {
         std::fs::copy(path, &dest_path).map_err(|e| format!("copy failed: {e}"))?;
     }
+    COUNTER.fetch_sub(1, Ordering::Relaxed);
     Ok(())
 }
 
