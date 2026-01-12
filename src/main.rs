@@ -33,6 +33,7 @@ fn main() {
     match cli.command {
         Commands::Scan { sources, threads } => scan(sources, threads, db),
         Commands::Stats => stats(db),
+        Commands::Optimize { temp } => optimize(temp, db),
         Commands::Build {
             destination,
             selector,
@@ -40,6 +41,12 @@ fn main() {
         } => build(destination, db, selector, split_at),
     }
     .unwrap();
+}
+
+fn optimize(temp: PathBuf, db: DB) -> Result<(), String> {
+    let rows = db.lock().mark_original_files().map_err(|e| e.to_string())?;
+    println!("Rows marked: {rows}");
+    Ok(())
 }
 
 fn scan(sources: Vec<PathBuf>, threads: usize, db: DB) -> Result<(), String> {
@@ -63,6 +70,10 @@ fn stats(db: DB) -> Result<(), String> {
     println!(
         "Redundant files: {}",
         db.lock().count_redundant_files().unwrap()
+    );
+    println!(
+        "Original files marked: {}",
+        db.lock().count_original_files().unwrap()
     );
     Ok(())
 }
@@ -91,6 +102,7 @@ fn build(
                 size_bytes: row.get(1)?,
                 blake3: row.get(2)?,
                 created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
+                optimized: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -198,6 +210,7 @@ fn process_file(path: &Path, hash_pool: &ThreadPool, db: DB) -> Result<(), Strin
         size_bytes: size_bytes.try_into().unwrap_or(0),
         blake3: hash,
         created_at: timestamp,
+        optimized: None,
     })
     .map_err(|e| e.to_string())?;
 
@@ -232,6 +245,15 @@ enum Commands {
     },
 
     Stats,
+
+    Optimize {
+        #[arg(
+            short,
+            long,
+            value_hint = clap::ValueHint::DirPath,
+        )]
+        temp: PathBuf,
+    },
 
     Build {
         #[arg(

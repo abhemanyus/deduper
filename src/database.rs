@@ -20,6 +20,7 @@ pub struct File {
     pub size_bytes: i64,
     pub blake3: String,
     pub created_at: DateTime<Local>,
+    pub optimized: Option<String>,
 }
 
 impl DB {
@@ -42,10 +43,13 @@ impl DB {
             path        TEXT PRIMARY KEY,
             size_bytes  INTEGER NOT NULL CHECK (size_bytes >= 0),
             blake3      TEXT    NOT NULL,
-            created_at  INTEGER NOT NULL
+            created_at  INTEGER NOT NULL,
+            optimized   TEXT,
+            is_original INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_files_blake3 ON files (blake3);
         CREATE INDEX IF NOT EXISTS idx_files_created ON files (created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_original_per_group ON files (blake3, size_bytes) WHERE is_original = 1;
     "#;
 }
 
@@ -89,6 +93,7 @@ impl<'a> LockDB<'a> {
                     size_bytes: row.get(1)?,
                     blake3: row.get(2)?,
                     created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
+                    optimized: row.get(4)?,
                 })
             })?
             .collect()
@@ -106,6 +111,34 @@ impl<'a> LockDB<'a> {
             })?
             .collect()
     }
+
+    pub fn mark_original_files(&self) -> Result<usize, rusqlite::Error> {
+        self.connection
+            .prepare_cached(Self::MARK_ORIGINAL_FILES)?
+            .execute(())
+    }
+
+    pub fn count_original_files(&self) -> Result<i64, rusqlite::Error> {
+        self.connection
+            .prepare_cached("SELECT COUNT(*) AS cnt FROM files WHERE is_original = 1;")?
+            .query_one((), |row| row.get::<_, i64>(0))
+    }
+
+    const MARK_ORIGINAL_FILES: &'static str = r#"
+        UPDATE files
+        SET is_original = CASE
+            WHEN rowid = (
+                SELECT rowid
+                FROM files f2
+                WHERE f2.blake3 = files.blake3
+                  AND f2.size_bytes = files.size_bytes
+                ORDER BY created_at ASC, rowid ASC
+                LIMIT 1
+            )
+            THEN 1
+            ELSE 0
+        END;
+    "#;
 
     pub const FIND_UNIQUE_FILES_ORDERED: &'static str = r#"
         SELECT * FROM (
