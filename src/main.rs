@@ -7,13 +7,13 @@ use std::{
     fs::create_dir_all,
     num::NonZeroUsize,
     path::{Path, PathBuf},
+    sync::Mutex,
+    thread::scope,
 };
 
 use chrono::{Datelike, Local, TimeZone};
 use clap::{Parser, Subcommand};
 use walkdir::WalkDir;
-
-use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
 use parse_size::parse_size;
 
@@ -50,18 +50,48 @@ fn optimize(temp: PathBuf, db: DB) -> Result<(), String> {
 }
 
 fn scan(sources: Vec<PathBuf>, threads: usize, db: DB) -> Result<(), String> {
-    let io_pool = ThreadPoolBuilder::new()
-        .num_threads(threads) // tune this
-        .thread_name(|i| format!("worker-{i}"))
-        .build()
-        .expect("failed to build thread pool");
-
-    let hash_pool = ThreadPoolBuilder::new()
-        .num_threads(num_cpus::get())
-        .thread_name(|i| format!("hash-{i}"))
-        .build()
-        .expect("failed to build hash pool");
-    io_pool.install(|| run(sources, &hash_pool, db));
+    let (sender, receiver) = crossbeam::channel::bounded::<PathBuf>(256);
+    let sources = Mutex::new(sources);
+    scope(|s| {
+        let _hash_pool = (0..num_cpus::get())
+            .map(|_| {
+                s.spawn(|| -> Result<(), String> {
+                    let db = db.clone();
+                    for path in &receiver {
+                        if let Err(err) = process_file(&path, &db) {
+                            eprintln!("❌ {}: {err}", path.display());
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .collect::<Vec<_>>();
+        scope(|s| {
+            let _io_pool = (0..threads)
+                .map(|_| {
+                    s.spawn(|| -> Result<(), String> {
+                        loop {
+                            let Some(source) = sources.lock().map_err(|e| e.to_string())?.pop()
+                            else {
+                                break Ok(());
+                            };
+                            WalkDir::new(source)
+                                .follow_links(false)
+                                .into_iter()
+                                .filter_map(Result::ok)
+                                .filter(|e| e.file_type().is_file())
+                                .for_each(|entry| {
+                                    if let Err(err) = sender.send(entry.into_path()) {
+                                        eprintln!("❌ {}: {err}", err.0.display());
+                                    }
+                                });
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+        });
+        drop(sender);
+    });
     Ok(())
 }
 
@@ -172,37 +202,10 @@ fn build(
     Ok(())
 }
 
-fn run(sources: Vec<PathBuf>, hash_pool: &ThreadPool, db: DB) {
-    eprintln!(
-        "Sources:\n\t{}",
-        sources
-            .iter()
-            .map(|s| s.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n\t")
-    );
-
-    sources
-        .par_iter()
-        .flat_map(|source| {
-            WalkDir::new(source)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(Result::ok)
-                .filter(|e| e.file_type().is_file())
-                .par_bridge()
-        })
-        .for_each(|entry| {
-            if let Err(err) = process_file(entry.path(), hash_pool, db.clone()) {
-                eprintln!("❌ {}: {err}", entry.path().display());
-            }
-        });
-}
-
-fn process_file(path: &Path, hash_pool: &ThreadPool, db: DB) -> Result<(), String> {
+fn process_file(path: &Path, db: &DB) -> Result<(), String> {
     let timestamp = extract_timestamp(path).ok_or("missing timestamp")?;
     let size_bytes = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
-    let hash = hash_pool.install(|| hasher::file_hash(path).ok_or("hashing failed"))?;
+    let hash = hasher::file_hash(path).ok_or("hashing failed")?;
     let db = db.lock();
 
     db.insert_file(&database::File {
