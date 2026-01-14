@@ -1,7 +1,7 @@
-mod csv;
 mod database;
 mod extractor;
 mod hasher;
+mod transcoder;
 
 use std::{
     fs::create_dir_all,
@@ -46,6 +46,8 @@ fn main() {
 fn optimize(temp: PathBuf, db: DB) -> Result<(), String> {
     let rows = db.lock().mark_original_files().map_err(|e| e.to_string())?;
     println!("Rows marked: {rows}");
+    create_dir_all(temp).map_err(|e| e.to_string())?;
+    println!("Directory created");
     Ok(())
 }
 

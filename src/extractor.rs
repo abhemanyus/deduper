@@ -1,5 +1,5 @@
 use std::{
-    fs::{metadata, File},
+    fs::{File, metadata},
     io::BufReader,
     path::Path,
 };
@@ -8,7 +8,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use exif::{In, Tag};
 
 use ffmpeg_next as ffmpeg;
-use mime_guess::{mime, Mime};
+use mime_guess::{Mime, mime};
 use std::sync::Once;
 
 static FFMPEG_INIT: Once = Once::new();
@@ -73,7 +73,7 @@ pub fn extract_video_timestamp(path: &Path) -> Option<DateTime<Local>> {
         .map(|dt| dt.with_timezone(&Local))
 }
 
-fn init_ffmpeg() {
+pub fn init_ffmpeg() {
     FFMPEG_INIT.call_once(|| {
         ffmpeg::init().expect("ffmpeg init failed");
     });

@@ -4,6 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Local, TimeZone};
+use rusqlite::Row;
 
 #[derive(Clone)]
 pub struct DB {
@@ -21,6 +22,25 @@ pub struct File {
     pub blake3: String,
     pub created_at: DateTime<Local>,
     pub optimized: Option<String>,
+    pub is_original: bool,
+    pub media_type: String,
+}
+
+impl TryFrom<&Row<'_>> for File {
+    type Error = rusqlite::Error;
+
+    fn try_from(row: &Row) -> Result<Self, Self::Error> {
+        let ts: i64 = row.get(3)?;
+        Ok(File {
+            path: row.get(0)?,
+            size_bytes: row.get(1)?,
+            blake3: row.get(2)?,
+            created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
+            optimized: row.get(4)?,
+            is_original: row.get("is_original")?,
+            media_type: row.get("media_type")?,
+        })
+    }
 }
 
 impl DB {
@@ -45,7 +65,8 @@ impl DB {
             blake3      TEXT    NOT NULL,
             created_at  INTEGER NOT NULL,
             optimized   TEXT,
-            is_original INTEGER NOT NULL DEFAULT 0
+            is_original INTEGER NOT NULL DEFAULT 0,
+            media_type  TEXT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_files_blake3 ON files (blake3);
         CREATE INDEX IF NOT EXISTS idx_files_created ON files (created_at);
@@ -94,6 +115,8 @@ impl<'a> LockDB<'a> {
                     blake3: row.get(2)?,
                     created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
                     optimized: row.get(4)?,
+                    is_original: row.get("is_original")?,
+                    media_type: row.get("media_type")?,
                 })
             })?
             .collect()
