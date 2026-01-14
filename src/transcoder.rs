@@ -9,10 +9,14 @@ pub fn transcode(input_file: &Path, output_file: &Path) -> Result<(), String> {
             "-y", // overwrite output
             "-i",
             input_file.to_str().unwrap(), // input file
+            "-crf",
+            "35",
+            "-preset",
+            "8",
             "-c:v",
-            "libx264", // video codec
+            "libsvtav1", // video codec
             "-c:a",
-            "aac",                         // audio codec
+            "copy",                         // audio codec
             output_file.to_str().unwrap(), // output file
         ])
         .output()
