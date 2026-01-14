@@ -30,13 +30,13 @@ impl TryFrom<&Row<'_>> for File {
     type Error = rusqlite::Error;
 
     fn try_from(row: &Row) -> Result<Self, Self::Error> {
-        let ts: i64 = row.get(3)?;
+        let ts: i64 = row.get("created_at")?;
         Ok(File {
-            path: row.get(0)?,
-            size_bytes: row.get(1)?,
-            blake3: row.get(2)?,
+            path: row.get("path")?,
+            size_bytes: row.get("size_bytes")?,
+            blake3: row.get("blake3")?,
             created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
-            optimized: row.get(4)?,
+            optimized: row.get("optimized")?,
             is_original: row.get("is_original")?,
             media_type: row.get("media_type")?,
         })
@@ -83,6 +83,9 @@ impl<'a> LockDB<'a> {
                 file.size_bytes,
                 &file.blake3,
                 file.created_at.timestamp(),
+                &file.optimized,
+                file.is_original,
+                &file.media_type,
             ),
         )?;
         Ok(())
@@ -107,18 +110,7 @@ impl<'a> LockDB<'a> {
     ) -> Result<Vec<File>, rusqlite::Error> {
         self.connection
             .prepare_cached(Self::FIND_DUP_FILES)?
-            .query_map((blake3, size_bytes), |row| {
-                let ts: i64 = row.get(3)?;
-                Ok(File {
-                    path: row.get(0)?,
-                    size_bytes: row.get(1)?,
-                    blake3: row.get(2)?,
-                    created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
-                    optimized: row.get(4)?,
-                    is_original: row.get("is_original")?,
-                    media_type: row.get("media_type")?,
-                })
-            })?
+            .query_map((blake3, size_bytes), |row| File::try_from(row))?
             .collect()
     }
 
@@ -147,6 +139,19 @@ impl<'a> LockDB<'a> {
             .query_one((), |row| row.get::<_, i64>(0))
     }
 
+    pub fn update_optimized_file(&self, file: &File) -> Result<(), rusqlite::Error> {
+        self.connection
+            .prepare_cached(Self::UPDATE_OPTIMIZED_FILE)?
+            .execute((&file.optimized, file.size_bytes, &file.path))?;
+        Ok(())
+    }
+
+    const UPDATE_OPTIMIZED_FILE: &'static str = r#"
+        UPDATE files
+        SET optimized = ?1, size_bytes = ?2
+        WHERE path = ?3;
+    "#;
+
     const MARK_ORIGINAL_FILES: &'static str = r#"
         UPDATE files
         SET is_original = CASE
@@ -171,6 +176,10 @@ impl<'a> LockDB<'a> {
         	ORDER BY created_at ASC
         ) ranked
         WHERE rn = 1;
+    "#;
+
+    pub const FIND_UNOPTIMIZED_VIDEOS: &'static str = r#"
+        SELECT * FROM files WHERE media_type = 'video' AND is_original = 1 AND optimized IS NULL;
     "#;
 
     pub const FIND_UNIQUE_FILES: &'static str = r#"
@@ -206,8 +215,11 @@ impl<'a> LockDB<'a> {
             path,
             size_bytes,
             blake3,
-            created_at
-        ) VALUES (?1, ?2, ?3, ?4);
+            created_at,
+            optimized,
+            is_original,
+            media_type
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6);
     "#;
 
     const COUNT_REDUNDANT_FILES: &'static str = r#"

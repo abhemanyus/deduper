@@ -11,7 +11,7 @@ use std::{
     thread::scope,
 };
 
-use chrono::{Datelike, Local, TimeZone};
+use chrono::Datelike;
 use clap::{Parser, Subcommand};
 use walkdir::WalkDir;
 
@@ -20,6 +20,7 @@ use parse_size::parse_size;
 use crate::{
     database::{DB, LockDB},
     extractor::extract_timestamp,
+    transcoder::transcode,
 };
 
 #[cfg(unix)]
@@ -46,8 +47,38 @@ fn main() {
 fn optimize(temp: PathBuf, db: DB) -> Result<(), String> {
     let rows = db.lock().mark_original_files().map_err(|e| e.to_string())?;
     println!("Rows marked: {rows}");
-    create_dir_all(temp).map_err(|e| e.to_string())?;
+    create_dir_all(&temp).map_err(|e| e.to_string())?;
     println!("Directory created");
+    let db_lock = db.lock();
+    let mut stmt = db_lock
+        .connection
+        .prepare(LockDB::FIND_UNOPTIMIZED_VIDEOS)
+        .map_err(|e| e.to_string())?;
+    let to_optimize = stmt
+        .query_map((), |row| database::File::try_from(row))
+        .map_err(|e| e.to_string())?;
+    for file in to_optimize {
+        let Ok(mut file) = file else {
+            continue;
+        };
+
+        let filename = format!("{}_{}.mkv", file.blake3, file.size_bytes);
+        let output_file = temp.join(filename);
+
+        let Ok(_) = transcode(&Path::new(&file.path), &output_file) else {
+            eprintln!("failed to transcode file: {}", &file.path);
+            continue;
+        };
+
+        let new_size = std::fs::metadata(&output_file)
+            .map_err(|e| e.to_string())?
+            .len();
+
+        file.size_bytes = new_size.try_into().unwrap();
+        file.optimized = Some(output_file.to_str().unwrap().to_string());
+
+        db_lock.insert_file(&file).unwrap();
+    }
     Ok(())
 }
 
@@ -127,16 +158,7 @@ fn build(
         })
         .map_err(|e| e.to_string())?;
     let unique_files = stmt
-        .query_map((), |row| {
-            let ts: i64 = row.get(3)?;
-            Ok(database::File {
-                path: row.get(0)?,
-                size_bytes: row.get(1)?,
-                blake3: row.get(2)?,
-                created_at: Local.timestamp_opt(ts, 0).single().unwrap(),
-                optimized: row.get(4)?,
-            })
-        })
+        .query_map((), |row| database::File::try_from(row))
         .map_err(|e| e.to_string())?;
 
     let mut total_bytes = 0;
@@ -209,6 +231,7 @@ fn process_file(path: &Path, db: &DB) -> Result<(), String> {
     let size_bytes = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     let hash = hasher::file_hash(path).ok_or("hashing failed")?;
     let db = db.lock();
+    let mime_type = extractor::extract_mimetype(path);
 
     db.insert_file(&database::File {
         path: path.display().to_string(),
@@ -216,6 +239,8 @@ fn process_file(path: &Path, db: &DB) -> Result<(), String> {
         blake3: hash,
         created_at: timestamp,
         optimized: None,
+        is_original: false,
+        media_type: mime_type.type_().to_string(),
     })
     .map_err(|e| e.to_string())?;
 
