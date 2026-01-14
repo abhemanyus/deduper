@@ -219,7 +219,7 @@ impl<'a> LockDB<'a> {
             optimized,
             is_original,
             media_type
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6);
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);
     "#;
 
     const COUNT_REDUNDANT_FILES: &'static str = r#"
