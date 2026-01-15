@@ -6,7 +6,7 @@ mod transcoder;
 use std::{
     fs::create_dir_all,
     num::NonZeroUsize,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf, absolute},
     sync::Mutex,
     thread::scope,
 };
@@ -20,7 +20,7 @@ use parse_size::parse_size;
 use crate::{
     database::{DB, LockDB},
     extractor::extract_timestamp,
-    transcoder::transcode,
+    transcoder::{find_bitrate, transcode},
 };
 
 #[cfg(unix)]
@@ -34,7 +34,11 @@ fn main() {
     match cli.command {
         Commands::Scan { sources, threads } => scan(sources, threads, db),
         Commands::Stats => stats(db),
-        Commands::Optimize { temp } => optimize(temp, db),
+        Commands::Optimize { temp, dry_run } => optimize(
+            absolute(temp).expect("temp path does not exist"),
+            db,
+            dry_run,
+        ),
         Commands::Build {
             destination,
             selector,
@@ -44,11 +48,17 @@ fn main() {
     .unwrap();
 }
 
-fn optimize(temp: PathBuf, db: DB) -> Result<(), String> {
+const BITRATE_CUTOFF: usize = 5 * 1000 * 1000;
+
+fn optimize(temp: PathBuf, db: DB, dry_run: bool) -> Result<(), String> {
     let rows = db.lock().mark_original_files().map_err(|e| e.to_string())?;
     println!("Rows marked: {rows}");
     create_dir_all(&temp).map_err(|e| e.to_string())?;
     println!("Directory created");
+
+    if dry_run {
+        return Ok(());
+    }
     let db_lock = db.lock();
     let mut stmt = db_lock
         .connection
@@ -61,12 +71,21 @@ fn optimize(temp: PathBuf, db: DB) -> Result<(), String> {
         let Ok(mut file) = file else {
             continue;
         };
+        println!("optimizing {}", &file.path);
+
+        if let Ok(bit_rate) = find_bitrate(&Path::new(&file.path))
+            && bit_rate <= BITRATE_CUTOFF
+        {
+            println!("bitrate ({bit_rate}) lower than cutoff ({BITRATE_CUTOFF}), skipping!");
+            continue;
+        }
 
         let filename = format!("{}_{}.mkv", file.blake3, file.size_bytes);
         let output_file = temp.join(filename);
 
-        let Ok(_) = transcode(&Path::new(&file.path), &output_file) else {
+        if let Err(err) = transcode(&Path::new(&file.path), &output_file) {
             eprintln!("failed to transcode file: {}", &file.path);
+            eprintln!("Error: {err}");
             continue;
         };
 
@@ -91,6 +110,7 @@ fn scan(sources: Vec<PathBuf>, threads: usize, db: DB) -> Result<(), String> {
                 s.spawn(|| -> Result<(), String> {
                     let db = db.clone();
                     for path in &receiver {
+                        println!("Scanning {}", path.display());
                         if let Err(err) = process_file(&path, &db) {
                             eprintln!("❌ {}: {err}", path.display());
                         }
@@ -108,6 +128,7 @@ fn scan(sources: Vec<PathBuf>, threads: usize, db: DB) -> Result<(), String> {
                             else {
                                 break Ok(());
                             };
+                            println!("Walking {}", source.display());
                             WalkDir::new(source)
                                 .follow_links(false)
                                 .into_iter()
@@ -164,8 +185,7 @@ fn build(
     let mut total_bytes = 0;
     for file in unique_files {
         let file = file.map_err(|e| e.to_string())?;
-        let path = Path::new(&file.path);
-        let mime_type = extractor::extract_mimetype(path);
+        let path = Path::new(file.optimized.as_ref().unwrap_or(&file.path));
 
         let timestamp = file.created_at;
         let ext = path
@@ -173,7 +193,7 @@ fn build(
             .and_then(|ext| ext.to_str())
             .unwrap_or("bin");
 
-        let media_type = mime_type.type_().as_str();
+        let media_type = &file.media_type;
 
         if let Some(ref selector) = selector
             && media_type != selector
@@ -207,20 +227,24 @@ fn build(
 
         create_dir_all(&dest_dir).map_err(|e| format!("mkdir failed: {e}"))?;
 
-        #[cfg(unix)]
-        {
-            symlink(path, &dest_path).map_err(|e| {
-                format!(
-                    "symlink already exists or failed {}: {}",
-                    dest_path.display(),
-                    e
-                )
-            })?;
-        }
+        if path.exists() {
+            #[cfg(unix)]
+            {
+                if let Err(err) = symlink(path, &dest_path) {
+                    eprintln!(
+                        "symlink already exists or failed {}: {}",
+                        dest_path.display(),
+                        err
+                    );
+                };
+            }
 
-        #[cfg(not(unix))]
-        {
-            std::fs::copy(path, &dest_path).map_err(|e| format!("copy failed: {e}"))?;
+            #[cfg(not(unix))]
+            {
+                if let Err(err) = std::fs::copy(path, &dest_path) {
+                    eprintln!("copy failed: {err}")
+                };
+            }
         }
     }
     Ok(())
@@ -283,6 +307,8 @@ enum Commands {
             value_hint = clap::ValueHint::DirPath,
         )]
         temp: PathBuf,
+        #[arg(short, long, action)]
+        dry_run: bool,
     },
 
     Build {

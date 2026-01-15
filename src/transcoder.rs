@@ -4,11 +4,16 @@ use ffmpeg_next::{Error, codec, format, media};
 
 use crate::extractor::init_ffmpeg;
 pub fn transcode(input_file: &Path, output_file: &Path) -> Result<(), String> {
+    if !input_file.exists() {
+        return Err("input video does not exist")?;
+    }
     let output_process = Command::new("ffmpeg")
         .args([
             "-y", // overwrite output
             "-i",
             input_file.to_str().unwrap(), // input file
+            "-vf",
+            "format=yuv420p",
             "-crf",
             "35",
             "-preset",
@@ -16,7 +21,7 @@ pub fn transcode(input_file: &Path, output_file: &Path) -> Result<(), String> {
             "-c:v",
             "libsvtav1", // video codec
             "-c:a",
-            "copy",                         // audio codec
+            "copy",                        // audio codec
             output_file.to_str().unwrap(), // output file
         ])
         .output()
@@ -33,7 +38,7 @@ pub fn transcode(input_file: &Path, output_file: &Path) -> Result<(), String> {
     }
 }
 
-pub fn find_codec(path: &Path) -> Result<codec::Id, Error> {
+pub fn find_bitrate(path: &Path) -> Result<usize, Error> {
     init_ffmpeg();
 
     let input = format::input(path)?;
@@ -42,21 +47,24 @@ pub fn find_codec(path: &Path) -> Result<codec::Id, Error> {
         .best(media::Type::Video)
         .ok_or(Error::InvalidData)?;
 
-    let decoder = video_stream.parameters().id();
+    let context = codec::context::Context::from_parameters(video_stream.parameters())?;
+    let decoder = context.decoder().video()?;
 
-    return Ok(decoder);
+    let bit_rate = decoder.bit_rate();
+
+    return Ok(bit_rate);
 }
 
 #[cfg(test)]
 mod test {
     use std::path::Path;
 
-    use crate::transcoder::{find_codec, transcode};
+    use crate::transcoder::{find_bitrate, transcode};
 
     #[test]
     fn test_video_format() {
         let video_path = Path::new("/home/abhe/Videos/output2.mov");
-        find_codec(video_path).unwrap();
+        println!("Bitrate: {}", find_bitrate(video_path).unwrap());
     }
 
     #[test]
